@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
 import { QRCodeModal } from './QRCodeModal';
-import { triggerSheetsSync } from '../../services/googleSheets';
+import { triggerSheetsSync, sendTestRowToGoogleSheets } from '../../services/googleSheets';
 import {
   isSupabaseConfigured,
   getSupabaseCredentials,
@@ -63,6 +63,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
   const [clearHistoryConfirm, setClearHistoryConfirm] = useState(false);
   const [showQRModal, setShowQRModal] = useState(false);
+  const [isTestingSheets, setIsTestingSheets] = useState(false);
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [sqlCopied, setSqlCopied] = useState(false);
   const [testEmailInput, setTestEmailInput] = useState('');
@@ -603,6 +604,7 @@ CREATE TABLE IF NOT EXISTS prize_stock (
 -- Migrace pro stávající tabulku v Supabase:
 ALTER TABLE prize_stock ADD COLUMN IF NOT EXISTS weight INTEGER DEFAULT 5;
 ALTER TABLE prize_stock ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+ALTER TABLE prize_stock ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 -- 2. Tabulka pro finalisty kvízu (10/10) do slosování
 CREATE TABLE IF NOT EXISTS contestants (
@@ -626,9 +628,16 @@ CREATE TABLE IF NOT EXISTS spins (
 
 -- 4. Tabulka pro evidenci pokusů e-mailů (zabránění opakovanému kvízu)
 CREATE TABLE IF NOT EXISTS attempts (
-  email TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  station TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Migrace pro případ starší tabulky attempts bez sloupců id a station:
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS id TEXT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS station TEXT;
+CREATE INDEX IF NOT EXISTS idx_attempts_email ON attempts (email);
 
 -- Povolení přístupu pro anonymní klíč (aby web mohl zapisovat bez přihlašování):
 ALTER TABLE prize_stock ENABLE ROW LEVEL SECURITY;
@@ -646,7 +655,27 @@ DROP POLICY IF EXISTS "Povolit anon pro spins" ON spins;
 CREATE POLICY "Povolit anon pro spins" ON spins FOR ALL TO anon USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Povolit anon pro attempts" ON attempts;
-CREATE POLICY "Povolit anon pro attempts" ON attempts FOR ALL TO anon USING (true) WITH CHECK (true);`;
+CREATE POLICY "Povolit anon pro attempts" ON attempts FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- 5. Naplnění všech 11 výher do prize_stock:
+INSERT INTO prize_stock (prize_id, prize_name, remaining_stock, weight, is_active)
+VALUES
+  ('p1', 'Qi2 Nabíječka', 10, 5, true),
+  ('p2', 'Qi2 Stojánek', 10, 4, true),
+  ('p3', 'Kickstand', 15, 6, true),
+  ('p4', '67W Adaptér', 10, 5, true),
+  ('p5', 'Pixel Buds', 5, 3, true),
+  ('p6', 'Sluneční brýle', 20, 7, true),
+  ('p7', 'Lanyard', 50, 8, true),
+  ('p8', 'Termohrnek', 15, 6, true),
+  ('p9', 'Ponožky', 25, 7, true),
+  ('p10', 'Batoh', 5, 4, true),
+  ('p11', 'Čepice', 15, 6, true)
+ON CONFLICT (prize_id) DO UPDATE SET
+  prize_name = EXCLUDED.prize_name,
+  remaining_stock = EXCLUDED.remaining_stock,
+  weight = EXCLUDED.weight,
+  is_active = EXCLUDED.is_active;`;
                     navigator.clipboard.writeText(sql);
                     setSqlCopied(true);
                     setTimeout(() => setSqlCopied(false), 2000);
@@ -672,6 +701,7 @@ CREATE POLICY "Povolit anon pro attempts" ON attempts FOR ALL TO anon USING (tru
 
 ALTER TABLE prize_stock ADD COLUMN IF NOT EXISTS weight INTEGER DEFAULT 5;
 ALTER TABLE prize_stock ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+ALTER TABLE prize_stock ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS contestants (
   id TEXT PRIMARY KEY,
@@ -692,9 +722,15 @@ CREATE TABLE IF NOT EXISTS spins (
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
-  email TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  station TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS id TEXT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS station TEXT;
+CREATE INDEX IF NOT EXISTS idx_attempts_email ON attempts (email);
 
 ALTER TABLE prize_stock ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contestants ENABLE ROW LEVEL SECURITY;
@@ -711,7 +747,26 @@ DROP POLICY IF EXISTS "Povolit anon pro spins" ON spins;
 CREATE POLICY "Povolit anon pro spins" ON spins FOR ALL TO anon USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Povolit anon pro attempts" ON attempts;
-CREATE POLICY "Povolit anon pro attempts" ON attempts FOR ALL TO anon USING (true) WITH CHECK (true);`}
+CREATE POLICY "Povolit anon pro attempts" ON attempts FOR ALL TO anon USING (true) WITH CHECK (true);
+
+INSERT INTO prize_stock (prize_id, prize_name, remaining_stock, weight, is_active)
+VALUES
+  ('p1', 'Qi2 Nabíječka', 10, 5, true),
+  ('p2', 'Qi2 Stojánek', 10, 4, true),
+  ('p3', 'Kickstand', 15, 6, true),
+  ('p4', '67W Adaptér', 10, 5, true),
+  ('p5', 'Pixel Buds', 5, 3, true),
+  ('p6', 'Sluneční brýle', 20, 7, true),
+  ('p7', 'Lanyard', 50, 8, true),
+  ('p8', 'Termohrnek', 15, 6, true),
+  ('p9', 'Ponožky', 25, 7, true),
+  ('p10', 'Batoh', 5, 4, true),
+  ('p11', 'Čepice', 15, 6, true)
+ON CONFLICT (prize_id) DO UPDATE SET
+  prize_name = EXCLUDED.prize_name,
+  remaining_stock = EXCLUDED.remaining_stock,
+  weight = EXCLUDED.weight,
+  is_active = EXCLUDED.is_active;`}
               </pre>
             </div>
           )}
@@ -738,11 +793,49 @@ CREATE POLICY "Povolit anon pro attempts" ON attempts FOR ALL TO anon USING (tru
             placeholder="https://script.google.com/macros/s/.../exec (volitelné)"
             className="w-full px-3.5 py-2 rounded-xl bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:border-[#e5a995]"
           />
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={isTestingSheets || !settings.googleSheetWebhookUrl}
+              onClick={async () => {
+                if (!settings.googleSheetWebhookUrl) {
+                  onShowToast('Nejprve vložte URL adresu webhooku.', 'error');
+                  return;
+                }
+                setIsTestingSheets(true);
+                const res = await sendTestRowToGoogleSheets(settings.googleSheetWebhookUrl);
+                setIsTestingSheets(false);
+                onShowToast(res.message, res.success ? 'success' : 'error');
+              }}
+              className="py-1.5 px-3 rounded-lg text-xs font-semibold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <span>{isTestingSheets ? 'Odesílám test...' : 'Otestovat zápis do Google Tabulky'}</span>
+            </button>
+
+            {settings.googleSheetWebhookUrl && settings.googleSheetWebhookUrl.includes('/exec') && (
+              <a
+                href={`${settings.googleSheetWebhookUrl}${settings.googleSheetWebhookUrl.includes('?') ? '&' : '?'}action=test`}
+                target="_blank"
+                rel="noreferrer"
+                className="py-1.5 px-3 rounded-lg text-xs font-semibold bg-white/10 hover:bg-white/20 text-white border border-white/10 transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <span>Otevřít přímý test v prohlížeči (?action=test)</span>
+              </a>
+            )}
+          </div>
+
           <p className="text-[11px] text-slate-400">
             {isSupabaseConfigured()
               ? 'Supabase obsluhuje celý provoz webu i sklad. Toto pole je volitelné – pokud zadáte URL Google skriptu, na pozadí se do tabulky bude zrcadlit kopie pro přímé losování o Pixel 11.'
               : 'Pokud nemáte Supabase, můžete zde zadat Google Apps Script webhook.'}
           </p>
+
+          <div className="p-2.5 rounded-lg bg-black/40 border border-white/10 text-[11px] text-slate-300 space-y-1">
+            <strong className="text-white block">Pokud se data nezapisují, zkontrolujte 3 nejčastější příčiny v Google Apps Scriptu:</strong>
+            <p>1. <strong>URL musí končit na <code>/exec</code></strong> (zkopírujte URL webové aplikace z okna Nasazení, nikoli odkaz z adresního řádku prohlížeče končící na <code>/edit</code>).</p>
+            <p>2. <strong>Přístup musí být nastaven na „Kdokoli“ (Anyone)</strong> – nikoli „Pouze já“.</p>
+            <p>3. <strong>Vždy po změně kódu v Apps Scriptu je nutné:</strong> Nasadit → Spravovat nasazení → kliknout na ikonu tužky (Upravit) → zvolit <em>Verze: Nová verze</em> → kliknout na <em>Nasadit</em>. (Pouhé uložení kód na existující URL nepropíše!).</p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 pt-1">

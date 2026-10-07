@@ -325,85 +325,53 @@ export async function triggerSheetsSync(): Promise<{ success: boolean; message: 
   while (outbox.length > 0) {
     const item = outbox[0];
     try {
-      if (provider === 'supabase') {
-        // 1. Primární zápis do PostgreSQL v Supabase
+      // 1. Zrcadlová záloha do Google Sheets (pokud je zadána URL)
+      if (webhookUrl && webhookUrl.trim().length > 10) {
+        try {
+          let backupPayload: Record<string, unknown> | null = null;
+          if (item.type === 'spin') {
+            const spin = item.data as SpinLog;
+            backupPayload = {
+              type: 'spin',
+              id: spin.id,
+              prizeName: spin.prizeName || 'Neznámá výhra',
+              prizeId: spin.prizeId || '',
+              email: (spin.userEmail || '').trim().toLowerCase(),
+              timestamp: formatTimestampSafely(spin.timestamp),
+              station,
+            };
+          } else if (item.type === 'entry') {
+            const entry = item.data as CompetitionEntry;
+            backupPayload = {
+              type: 'entry',
+              id: entry.id,
+              email: (entry.email || '').trim().toLowerCase(),
+              score: `${entry.score}/${entry.totalQuestions}`,
+              prizeWon: entry.prizeWon || '',
+              timestamp: formatTimestampSafely(entry.timestamp),
+              station,
+            };
+          }
+
+          if (backupPayload) {
+            await fetch(webhookUrl, {
+              method: 'POST',
+              mode: 'no-cors',
+              headers: { 'Content-Type': 'text/plain' },
+              body: JSON.stringify(backupPayload),
+            });
+          }
+        } catch (sheetsErr) {
+          console.warn('Google Sheets mirror error:', sheetsErr);
+        }
+      }
+
+      // 2. Primární zápis do PostgreSQL v Supabase (pokud je nakonfigurována)
+      if (isSupabaseConfigured()) {
         const ok = await dispatchOutboxItemToSupabase(item);
         if (!ok) {
           throw new Error('Chyba při zápisu do Supabase databáze');
         }
-
-        // 2. Paralelní zrcadlová záloha do Google Sheets (pouze e-maily do slosování 8/8 a točení kola)
-        if (webhookUrl && webhookUrl.trim().length > 10) {
-          try {
-            let backupPayload: Record<string, unknown> | null = null;
-            if (item.type === 'spin') {
-              const spin = item.data as SpinLog;
-              backupPayload = {
-                type: 'spin',
-                id: spin.id,
-                prizeName: spin.prizeName || 'Neznámá výhra',
-                prizeId: spin.prizeId || '',
-                email: (spin.userEmail || '').trim().toLowerCase(),
-                timestamp: formatTimestampSafely(spin.timestamp),
-                station,
-              };
-            } else if (item.type === 'entry') {
-              const entry = item.data as CompetitionEntry;
-              backupPayload = {
-                type: 'entry',
-                id: entry.id,
-                email: (entry.email || '').trim().toLowerCase(),
-                score: `${entry.score}/${entry.totalQuestions}`,
-                prizeWon: entry.prizeWon || '',
-                timestamp: formatTimestampSafely(entry.timestamp),
-                station,
-              };
-            }
-
-            if (backupPayload) {
-              fetch(webhookUrl, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: { 'Content-Type': 'text/plain' },
-                body: JSON.stringify(backupPayload),
-              }).catch(() => {});
-            }
-          } catch {
-            // Tichá záloha nikdy neblokuje hlavní flow
-          }
-        }
-      } else {
-        // Fallback pro standalone Google Sheets režim
-        let payload: Record<string, unknown>;
-        if (item.type === 'spin') {
-          const spin = item.data as SpinLog;
-          payload = {
-            type: 'spin',
-            id: spin.id,
-            prizeName: spin.prizeName || 'Neznámá výhra',
-            email: (spin.userEmail || '').trim().toLowerCase(),
-            timestamp: formatTimestampSafely(spin.timestamp),
-            station,
-          };
-        } else {
-          const entry = item.data as CompetitionEntry;
-          payload = {
-            type: 'entry',
-            id: entry.id,
-            email: (entry.email || '').trim().toLowerCase(),
-            score: `${entry.score}/${entry.totalQuestions}`,
-            prizeWon: entry.prizeWon || '',
-            timestamp: formatTimestampSafely(entry.timestamp),
-            station,
-          };
-        }
-
-        await fetch(webhookUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify(payload),
-        });
       }
 
       outbox.shift();
@@ -432,6 +400,130 @@ export async function triggerSheetsSync(): Promise<{ success: boolean; message: 
   return {
     success: true,
     message: `Úspěšně odesláno ${sentCount} záznamů do ${targetName}.`,
+  };
+}
+
+/**
+ * Sends an immediate live test row to Google Sheets to verify webhook connectivity.
+ */
+export async function sendTestRowToGoogleSheets(
+  webhookUrlParam?: string
+): Promise<{ success: boolean; message: string }> {
+  const url = (webhookUrlParam || getWebhookUrl()).trim().replace(/['"]/g, '');
+  if (!url || !url.startsWith('http')) {
+    return {
+      success: false,
+      message: 'Není zadána platná URL adresa Google Apps Scriptu (musí začínat na https://script.google.com/macros/s/ a končit na /exec).',
+    };
+  }
+
+  if (!url.includes('/exec')) {
+    return {
+      success: false,
+      message: 'Zadaná URL nekončí na /exec. Ujistěte se, že kopírujete URL adresu webové aplikace z menu Nasadit (Deploy), nikoli odkaz z řádku prohlížeče.',
+    };
+  }
+
+  try {
+    const testPayload = {
+      type: 'spin',
+      id: 'test_' + Date.now(),
+      prizeName: 'TEST: Spojení funguje (Google Sheets)',
+      prizeId: 'test',
+      email: 'test@vodafone.cz',
+      timestamp: formatTimestampSafely(Date.now()),
+      station: 'Testovací tlačítko z administrace',
+    };
+
+    await fetch(url, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(testPayload),
+    });
+
+    return {
+      success: true,
+      message: 'Testovací záznam byl odeslán do Google Tabulky! Otevřete tabulku a zkontrolujte list „Roztočení kola“.',
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: `Chyba při volání webhooku: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
+ * Exports all existing local/memory entries and spins to Google Sheets via webhook.
+ */
+export async function exportAllToGoogleSheets(
+  entries: CompetitionEntry[],
+  spins: SpinLog[],
+  webhookUrlParam?: string
+): Promise<{ success: boolean; count: number; message: string }> {
+  const url = (webhookUrlParam || getWebhookUrl()).trim().replace(/['"]/g, '');
+  if (!url || !url.startsWith('http') || !url.includes('/exec')) {
+    return {
+      success: false,
+      count: 0,
+      message: 'Zadejte platnou URL adresu webové aplikace Google Apps Scriptu končící na /exec.',
+    };
+  }
+
+  let sent = 0;
+  const station = getStationName();
+
+  // 1. Send all contestants
+  for (const entry of entries) {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({
+          type: 'entry',
+          id: entry.id,
+          email: (entry.email || '').trim().toLowerCase(),
+          score: `${entry.score}/${entry.totalQuestions}`,
+          prizeWon: entry.prizeWon || '',
+          timestamp: formatTimestampSafely(entry.timestamp),
+          station,
+        }),
+      });
+      sent++;
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Send all spins
+  for (const spin of spins) {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({
+          type: 'spin',
+          id: spin.id,
+          prizeName: spin.prizeName || 'Neznámá výhra',
+          prizeId: spin.prizeId || '',
+          email: (spin.userEmail || '').trim().toLowerCase(),
+          timestamp: formatTimestampSafely(spin.timestamp),
+          station,
+        }),
+      });
+      sent++;
+    } catch {
+      // ignore
+    }
+  }
+
+  return {
+    success: true,
+    count: sent,
+    message: `Odesláno ${sent} záznamů (${entries.length} finalistů a ${spins.length} roztočení kola) do Google Tabulky.`,
   };
 }
 

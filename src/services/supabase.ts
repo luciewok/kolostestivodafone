@@ -142,10 +142,10 @@ export async function checkEmailInSupabase(
   if (!cleanEmail) return { exists: false };
 
   try {
-    // 1. Check in attempts table
+    // 1. Check in attempts table (select email as it exists in all schema versions)
     const { data: attemptData, error: attemptErr } = await supabase
       .from('attempts')
-      .select('id')
+      .select('email')
       .eq('email', cleanEmail)
       .limit(1);
 
@@ -156,7 +156,7 @@ export async function checkEmailInSupabase(
     // 2. Check in contestants table
     const { data: contestantData, error: contestantErr } = await supabase
       .from('contestants')
-      .select('id')
+      .select('email')
       .eq('email', cleanEmail)
       .limit(1);
 
@@ -192,6 +192,24 @@ export async function logParticipantAttemptToSupabase(email: string): Promise<bo
 
     if (error) {
       console.warn('Supabase attempt insert error:', error.message);
+      // Fallback: If table attempts was created with old schema without id/station columns
+      if (
+        error.message &&
+        (error.message.includes('column "id"') ||
+          error.message.includes('column "station"') ||
+          error.code === '42703')
+      ) {
+        const { error: retryErr } = await supabase.from('attempts').insert({
+          email: cleanEmail,
+          created_at: new Date().toISOString(),
+        });
+        if (!retryErr) return true;
+        // Even simpler fallback
+        const { error: simpleErr } = await supabase.from('attempts').insert({
+          email: cleanEmail,
+        });
+        if (!simpleErr) return true;
+      }
       return false;
     }
     return true;
@@ -997,7 +1015,7 @@ export async function clearAttemptsInSupabase(): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (!supabase) return false;
   try {
-    await supabase.from('attempts').delete().neq('id', '___non_existent___');
+    await supabase.from('attempts').delete().neq('email', '___non_existent___');
     return true;
   } catch {
     return false;
@@ -1012,8 +1030,8 @@ export async function clearContestantsInSupabase(): Promise<boolean> {
   if (!supabase) return false;
 
   try {
-    await supabase.from('contestants').delete().neq('id', '___non_existent___');
-    await supabase.from('attempts').delete().neq('id', '___non_existent___');
+    await supabase.from('contestants').delete().neq('email', '___non_existent___');
+    await supabase.from('attempts').delete().neq('email', '___non_existent___');
     return true;
   } catch {
     return false;
