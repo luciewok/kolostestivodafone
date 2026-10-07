@@ -1,0 +1,8 @@
+{
+  "name": "Vodafone Kolo štěstí",
+  "description": "Aplikace Kolo štěstí pro akce s interactive roztočením tahem a admin panelem.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
